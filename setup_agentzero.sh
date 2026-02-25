@@ -135,10 +135,30 @@ else
 fi
 
 # -----------------------------------------------
-# STEP 7: Create template configuration files
+# STEP 7: Create AgentZero's working directory
 # -----------------------------------------------
 echo ""
-echo "[7/7] Creating configuration templates..."
+echo "[7/9] Creating /a0 working directory..."
+# AgentZero expects /a0 as its default working directory (normally inside Docker)
+# Without this, every tool call will fail with PermissionError
+sudo mkdir -p /a0
+sudo chown $USER:$USER /a0
+echo "Created /a0 directory."
+
+# -----------------------------------------------
+# STEP 8: Install Playwright browser dependencies (optional)
+# -----------------------------------------------
+echo ""
+echo "[8/9] Installing browser agent dependencies..."
+sudo apt-get install -y libatk1.0-0 libatspi2.0-0 libxcomposite1 \
+    libxdamage1 libxfixes3 libxrandr2 libgbm1 libxkbcommon0 2>/dev/null || \
+    echo "Some browser deps not available — browser agent may not work (non-critical)."
+
+# -----------------------------------------------
+# STEP 9: Create template configuration files
+# -----------------------------------------------
+echo ""
+echo "[9/9] Creating configuration templates..."
 mkdir -p "$AGENT_DIR/usr"
 
 # Create settings.json template (if not already configured)

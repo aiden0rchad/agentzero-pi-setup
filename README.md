@@ -17,8 +17,11 @@ No cloud APIs required. Fully private. Fully local.
 - [Installation](#-installation)
   - [Option A: Automated Setup Script](#option-a-automated-setup-script)
   - [Option B: Manual Step-by-Step](#option-b-manual-step-by-step)
+- [Post-Install Fixes](#-post-install-fixes)
 - [Configuration](#-configuration)
 - [Running AgentZero](#-running-agentzero)
+- [Auto-Start on Boot (systemd)](#-auto-start-on-boot-systemd)
+- [Remote Access via Tailscale](#-remote-access-via-tailscale)
 - [Telegram Integration (Optional)](#-telegram-integration-optional)
 - [Troubleshooting](#-troubleshooting)
 - [ARM64 Compatibility Notes](#-arm64-compatibility-notes)
@@ -200,6 +203,41 @@ sudo usermod -aG docker $USER
 
 ---
 
+## 🔨 Post-Install Fixes
+
+After installation, apply these fixes before running AgentZero:
+
+### Create the `/a0` Working Directory
+
+AgentZero's code execution tool expects a `/a0` directory (used as the default working directory inside Docker). Since we're running natively, you must create it manually:
+
+```bash
+sudo mkdir -p /a0
+sudo chown $USER:$USER /a0
+```
+
+> **Without this**, every tool call (terminal commands, file operations, browser agent) will fail with `PermissionError: [Errno 13] Permission denied: '/a0'`.
+
+### Install Playwright Browser Dependencies
+
+If you want AgentZero's **browser agent** to work (for web browsing tasks), install the required system libraries:
+
+```bash
+sudo apt-get install -y libatk1.0-0 libatspi2.0-0 libxcomposite1 \
+    libxdamage1 libxfixes3 libxrandr2 libgbm1 libxkbcommon0
+```
+
+Or let Playwright install them automatically:
+
+```bash
+cd ~/agent-zero && source venv/bin/activate
+playwright install-deps
+```
+
+> **Note:** Running a headless browser on a Pi 4 with 4GB RAM is resource-heavy. If you only need chat and code execution, you can skip this.
+
+---
+
 ## ⚙ Configuration
 
 ### 1. Configure the LLM Connection
@@ -291,22 +329,90 @@ http://<raspberry_pi_ip>:5000
 
 > **Note:** The `--dockerized=true` flag runs AgentZero in production mode, which avoids development-mode RFC calls to a non-existent orchestrator.
 
-### Running as a Background Service (Optional)
+---
 
-To keep AgentZero running after you close SSH:
+## 🔄 Auto-Start on Boot (systemd)
+
+To have AgentZero start automatically when the Pi boots and restart if it crashes:
+
+### 1. Create the service file
 
 ```bash
-# Using nohup
-cd ~/agent-zero && source venv/bin/activate
-nohup python run_ui.py --dockerized=true > agentzero.log 2>&1 &
-
-# Or using screen
-screen -S agentzero
-cd ~/agent-zero && source venv/bin/activate
-python run_ui.py --dockerized=true
-# Detach with Ctrl+A, then D
-# Reattach with: screen -r agentzero
+sudo nano /etc/systemd/system/agentzero.service
 ```
+
+Paste:
+
+```ini
+[Unit]
+Description=AgentZero AI Agent
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=<YOUR_PI_USERNAME>
+WorkingDirectory=/home/<YOUR_PI_USERNAME>/agent-zero
+ExecStart=/home/<YOUR_PI_USERNAME>/agent-zero/venv/bin/python run_ui.py --dockerized=true
+Restart=on-failure
+RestartSec=10
+Environment=PATH=/home/<YOUR_PI_USERNAME>/agent-zero/venv/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=multi-user.target
+```
+
+> Replace `<YOUR_PI_USERNAME>` with your actual username (e.g., `pi`).
+
+### 2. Enable and start
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable agentzero
+sudo systemctl start agentzero
+```
+
+### 3. Useful commands
+
+```bash
+sudo systemctl status agentzero      # Check status
+journalctl -u agentzero -f            # View live logs
+sudo systemctl restart agentzero      # Restart after config changes
+sudo systemctl stop agentzero         # Stop
+```
+
+---
+
+## 🌐 Remote Access via Tailscale
+
+To access AgentZero from your phone or from outside your home network, use [Tailscale](https://tailscale.com) — a zero-config VPN.
+
+### Install Tailscale on the Pi
+
+```bash
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up
+```
+
+Follow the printed URL to authorize the Pi in your Tailscale account.
+
+### Get the Pi's Tailscale IP
+
+```bash
+tailscale ip -4
+```
+
+This returns a `100.x.y.z` address.
+
+### Access from Any Device
+
+With Tailscale running on your phone/laptop, open:
+
+```
+http://100.x.y.z:5000
+```
+
+This works from anywhere — home, cellular, coffee shop — as long as both devices are connected to your Tailscale network.
 
 ---
 
@@ -372,9 +478,34 @@ pip install faiss-cpu==1.8.0.post1
 - For Ollama: Use `"ollama"` provider **without** `/v1`
 - Verify your model name matches exactly: `curl http://<server>:<port>/v1/models`
 
-### Chrome can't connect but Safari works
+### Chrome/Firefox can't connect but Safari works
 
-Chrome's "Private Network Access" restrictions may block HTTP connections to local IPs. Use Safari, Firefox, or try Chrome Incognito mode.
+**Cause:** On **macOS Sequoia** (15.0+), Apple introduced **Local Network Privacy**. Third-party apps (Chrome, Firefox, etc.) need explicit permission to access devices on your local network. Safari and Terminal are system apps that bypass this restriction.
+
+**Fix (Mac):** Go to **System Settings → Privacy & Security → Local Network** and toggle **ON** for Chrome, Firefox, and any other browser you want to use.
+
+**Fix (iPhone):** Go to **Settings → Privacy & Security → Local Network** and ensure your browser is toggled on. If it doesn't appear in the list, try loading the page first — iOS will prompt you to allow local network access.
+
+> **Tip:** If you're still having trouble on mobile, use [Tailscale](#-remote-access-via-tailscale) and access AgentZero via its `100.x.y.z` Tailscale IP instead of the local IP.
+
+### "Memory consolidation timeout for area fragments"
+
+This is a non-critical warning. AgentZero's background memory consolidation system uses the `util_model` to clean up memories, and the default 60-second timeout can be exceeded by larger/slower models.
+
+**Impact:** None — your chat and agent actions are unaffected. Memories are still saved; they just skip being "consolidated" with older ones.
+
+**Fix (optional):** Use a smaller, faster model for `util_model` (e.g., a 3B-8B model on a separate llama-server port) while keeping your main `chat_model` large.
+
+### PermissionError: `/a0` Permission denied
+
+**Cause:** AgentZero expects a `/a0` working directory (the default inside Docker containers). Running natively, this directory doesn't exist.
+
+**Fix:**
+```bash
+sudo mkdir -p /a0
+sudo chown $USER:$USER /a0
+sudo systemctl restart agentzero
+```
 
 ### `RequestsDependencyWarning: urllib3 ...`
 
