@@ -200,8 +200,12 @@ RFC_PASSWORD=change_me_to_any_password
 
 # Bind to all interfaces for network access
 WEB_UI_HOST=0.0.0.0
+
+# IMPORTANT: Password-protect the web UI (change this!)
+# Without this, anyone on your network can use your agent
+API_KEY_AUTH=change_me_to_a_strong_password
 ENV_EOF
-echo "Created usr/.env template."
+echo "Created usr/.env template — CHANGE API_KEY_AUTH before exposing to network!"
 fi
 
 # -----------------------------------------------

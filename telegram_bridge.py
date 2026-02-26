@@ -8,15 +8,26 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # ===========================================================
-# CONFIGURATION — Fill in your values before running!
+# CONFIGURATION
+# Set these as environment variables for security, or edit
+# the fallback values below.
+#
+# Export before running:
+#   export TELEGRAM_BOT_TOKEN="your_token_here"
+#   export TELEGRAM_ALLOWED_USER_ID="123456789"
+#
+# Or create a .env file next to this script.
 # ===========================================================
 
 # Get this from Telegram's @BotFather
-TELEGRAM_BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
 
 # Get this from Telegram's @userinfobot (numeric ID)
 # This ensures ONLY you can talk to the agent
-ALLOWED_USER_ID = 123456789
+ALLOWED_USER_ID = int(os.environ.get("TELEGRAM_ALLOWED_USER_ID", "123456789"))
+
+# Maximum message length to forward to AgentZero (prevent abuse)
+MAX_MESSAGE_LENGTH = 4096
 
 # Path to the AgentZero directory on your Pi
 AGENT_ZERO_DIR = os.path.expanduser("~/agent-zero")
@@ -31,6 +42,7 @@ agent_subprocess = None
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /start command"""
     if update.effective_user.id != ALLOWED_USER_ID:
+        print(f"⚠️  Unauthorized /start attempt from user ID: {update.effective_user.id}")
         await update.message.reply_text("Unauthorized user.")
         return
     await update.message.reply_text(
@@ -45,9 +57,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     global agent_pty_master
 
     if update.effective_user.id != ALLOWED_USER_ID:
+        print(f"⚠️  Unauthorized message attempt from user ID: {update.effective_user.id}")
         return
 
     user_text = update.message.text
+
+    # Input validation: limit message length
+    if len(user_text) > MAX_MESSAGE_LENGTH:
+        await update.message.reply_text(
+            f"Message too long ({len(user_text)} chars). Max is {MAX_MESSAGE_LENGTH}."
+        )
+        return
+
     if agent_pty_master:
         os.write(agent_pty_master, (user_text + '\n').encode('utf-8'))
     else:
@@ -121,6 +142,15 @@ def start_agent_process(context: ContextTypes.DEFAULT_TYPE):
 
 
 def main() -> None:
+    if TELEGRAM_BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN":
+        print("ERROR: Set TELEGRAM_BOT_TOKEN environment variable or edit this file.")
+        print("  export TELEGRAM_BOT_TOKEN='your_token_here'")
+        print("  export TELEGRAM_ALLOWED_USER_ID='your_user_id'")
+        exit(1)
+
+    if ALLOWED_USER_ID == 123456789:
+        print("WARNING: Using default ALLOWED_USER_ID. Set TELEGRAM_ALLOWED_USER_ID.")
+
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
@@ -130,6 +160,7 @@ def main() -> None:
     )
 
     print("Starting Telegram <-> AgentZero Bridge")
+    print(f"Authorized user ID: {ALLOWED_USER_ID}")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 

@@ -307,9 +307,14 @@ RFC_PASSWORD=any_password_here
 
 # Bind to all interfaces so you can access from other devices
 WEB_UI_HOST=0.0.0.0
+
+# IMPORTANT: Password-protect the web UI (without this, anyone on your network can use your agent)
+API_KEY_AUTH=choose_a_strong_password_here
 ```
 
-> If using Ollama instead, add `API_KEY_OLLAMA=sk_no_key_required`
+> If using Ollama instead, also add `API_KEY_OLLAMA=sk_no_key_required`
+
+> ⚠️ **Security:** The `API_KEY_AUTH` setting is critical. Without it, anyone who can reach your Pi's IP can use AgentZero to execute commands, browse the web, and access files on your Pi. Always set this to a strong password.
 
 ---
 
@@ -414,6 +419,23 @@ http://100.x.y.z:5000
 
 This works from anywhere — home, cellular, coffee shop — as long as both devices are connected to your Tailscale network.
 
+> ⚠️ **Security:** Even though Tailscale is encrypted and private, always set `API_KEY_AUTH` in your `.env` to password-protect the web UI. Tailscale ACLs can further restrict which devices can reach the Pi.
+
+---
+
+## 🔒 Security Considerations
+
+AgentZero is an **autonomous AI agent with code execution capabilities**. When self-hosting, keep these security practices in mind:
+
+| Risk | Mitigation |
+|------|------------|
+| **Unauthenticated web UI** | Always set `API_KEY_AUTH` in `usr/.env` to require a password |
+| **Code execution on host** | Enable Docker sandboxing (`CODE_EXEC_DOCKER_ENABLED=true`) so agent code runs in disposable containers, not directly on your Pi |
+| **Network exposure** | Use Tailscale instead of port-forwarding. Never expose port 5000 to the public internet |
+| **Prompt injection** | Be cautious when asking the agent to visit untrusted URLs or process untrusted content — malicious prompts could instruct the agent to execute harmful commands |
+| **Telegram bot token** | Treat your bot token like a password. If compromised, regenerate it immediately via [@BotFather](https://t.me/BotFather) |
+| **`/a0` directory** | The agent has full read/write access to `/a0`. Don't store sensitive files there |
+
 ---
 
 ## 📱 Telegram Integration (Optional)
@@ -445,7 +467,7 @@ You can bridge AgentZero to Telegram so you can chat with your agent from your p
    python telegram_bridge.py
    ```
 
-> ⚠ **Security:** The `ALLOWED_USER_ID` check ensures only YOU can interact with the agent. Never share your bot token publicly.
+> ⚠️ **Security:** The `ALLOWED_USER_ID` check ensures only YOU can interact with the agent. Never share your bot token publicly. If your token is ever compromised, regenerate it immediately via [@BotFather](https://t.me/BotFather) — `/revoke` then `/newbot`.
 
 ---
 
