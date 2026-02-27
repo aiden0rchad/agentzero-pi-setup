@@ -110,16 +110,25 @@ pip install -r requirements.txt
 pip install -r requirements2.txt
 
 echo ""
-echo "[5c/9] Applying ARM64 compatibility fixes..."
-# Fix torch: v2.10.0 uses ARMv8.2+ instructions that Pi 4 (ARMv8.0) lacks
-pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
-pip install torchvision==0.20.1
+echo "[5c/9] Applying ARM64 compatibility fixes and security patches..."
+# torch 2.6.0: fixes CVE-2025-32434 (critical RCE via torch.load, patched in 2.6.0)
+# Official CPU-only aarch64 wheel is available at download.pytorch.org/whl/cpu
+pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
+pip install torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cpu
 
-# Fix faiss: v1.11.0 has SVE detection issues on Pi 4
+# faiss-cpu: keep at 1.8.0.post1 — versions 1.9+ add SVE targets that can
+# segfault on Pi 4's Cortex-A72 (ARMv8.0, no SVE). No CVEs in any version.
 pip install faiss-cpu==1.8.0.post1
 
-# Fix sentence-transformers: ensure compatibility with installed transformers
+# sentence-transformers: always use latest compatible version
 pip install sentence-transformers --upgrade
+
+# aiohttp: force upgrade — multiple CVEs (memory exhaustion, request smuggling)
+# fixed in 3.13.3+. Agent Zero doesn't pin this so we ensure the latest.
+pip install aiohttp --upgrade
+
+# pathspec: force upgrade to 1.0.4+ — fixes GitWildMatchPattern DeprecationWarning
+pip install pathspec --upgrade
 
 # -----------------------------------------------
 # STEP 6: Apply AgentZero settings.py bug fix
