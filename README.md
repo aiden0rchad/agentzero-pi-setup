@@ -427,6 +427,8 @@ echo 'A0_SET_tts_kokoro=false' >> ~/agent-zero/usr/.env
 
 Or in the AgentZero web UI: **Settings → TTS → disable Kokoro**.
 
+> ⚠️ **Important:** Disabling Kokoro only removes the server-side neural TTS model. Your **browser's built-in Web Speech API** may still speak responses using your OS's system voice. To silence this completely, click the **speaker icon** in the AgentZero chat UI to toggle TTS off, or add `A0_SET_tts_enabled=false` to `usr/.env`.
+
 ### 3. Use delayed embedding model loading (~400MB saved at startup)
 
 By default, AgentZero loads the `sentence-transformers` model at startup for memory recall. Delayed loading only loads it when memory recall is actually first needed:
@@ -670,6 +672,34 @@ sudo mkdir -p /a0
 sudo chown $USER:$USER /a0
 sudo systemctl restart agentzero
 ```
+
+---
+
+### TTS voice still speaks after disabling Kokoro
+
+**Cause:** Disabling `tts_kokoro` removes the Kokoro neural model from the server, but AgentZero also supports browser-based TTS via the **Web Speech API** (your OS's built-in voice). These are two independent systems.
+
+**Fix:** Toggle the speaker icon in the AgentZero chat UI to disable all TTS output. To make this permanent for all sessions:
+
+```bash
+echo 'A0_SET_tts_enabled=false' >> ~/agent-zero/usr/.env
+sudo systemctl restart agentzero.service
+```
+
+---
+
+### AgentZero stopped itself after being asked to restart in chat
+
+**Cause:** Agent Zero has full code execution access to the host. If you ask it to "restart itself" in the chat, it will use `pkill -f run_ui.py` to kill its own process. Since the service is managed by systemd, this causes systemd to mark it `inactive (dead)` and stop restarting it (if `Restart=on-failure` and the exit was clean).
+
+**Fix:** Always restart AgentZero from your SSH terminal, never through the chat UI:
+
+```bash
+sudo systemctl restart agentzero.service
+sudo journalctl -u agentzero.service -f
+```
+
+> ⚠️ **Tip:** Never ask the agent to "restart yourself", "kill the server", or run `pkill`/`killall` targeting `run_ui.py`. It will comply and take itself down.
 
 ---
 
