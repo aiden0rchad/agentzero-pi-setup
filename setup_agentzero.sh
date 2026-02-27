@@ -4,7 +4,7 @@
 #
 # This script installs Python 3.12 via pyenv, sets up a virtual
 # environment, installs all AgentZero dependencies with ARM64-
-# compatible package versions, configures memory optimizations,
+# compatible package versions, applies memory optimizations (swap, TTS disable),
 # and creates a systemd service for auto-start.
 #
 # Usage:
@@ -248,17 +248,16 @@ with open(path, 'r') as f:
 # Disable Kokoro TTS: loads a large neural TTS model into RAM at startup (~500-800MB)
 # You can re-enable in the web UI if you have enough RAM headroom
 s['tts_kokoro'] = False
-# Delayed embedding model load: don't load sentence-transformers at startup (~400-500MB)
-# The model loads on-demand when memory recall is first needed
-s['memory_recall_delayed'] = True
-# Keep all memory/recall features enabled — just lazy-load the model
+# Keep all memory/recall features enabled with immediate loading (full agent intelligence)
 s['memory_recall_enabled'] = True
 s['memory_memorize_enabled'] = True
+# Ensure delayed loading is disabled so memory is available from the first message
+s.pop('memory_recall_delayed', None)
 with open(path, 'w') as f:
     json.dump(s, f, indent=4)
 print("  ✅ Applied Pi memory optimizations to settings.json")
 print("     - tts_kokoro: disabled (saves ~500-800MB RAM)")
-print("     - memory_recall_delayed: true (saves ~400MB at startup)")
+print("     - memory_recall: enabled with eager loading (full intelligence)")
 PYEOF
 else
     echo "  ℹ️  No settings.json yet — optimizations will be applied on first save"
@@ -337,8 +336,7 @@ cat > "$AGENT_DIR/usr/settings.json" << 'SETTINGS_EOF'
     "browser_model_api_base": "http://YOUR_LLM_SERVER_IP:PORT/v1",
     "browser_model_vision": false,
     "agent_profile": "agent0",
-    "tts_kokoro": false,
-    "memory_recall_delayed": true
+    "tts_kokoro": false
 }
 SETTINGS_EOF
 echo "Created usr/settings.json template — EDIT THIS with your LLM server details!"
