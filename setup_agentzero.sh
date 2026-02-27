@@ -182,6 +182,58 @@ except FileNotFoundError:
 PYEOF
 
 # -----------------------------------------------
+# STEP 6b: Patch memory extensions to truncate history (context window fix)
+# -----------------------------------------------
+# Both _50_memorize_fragments.py and _51_memorize_solutions.py send the full
+# conversation history to the utility model with no size check, causing
+# "request exceeds context size" errors once a conversation grows past ~5-6 turns.
+# This patch inserts a truncation step that clips msgs_text to fit within
+# the utility model's context window (default 8192 tokens).
+echo ""
+echo "[6b/9] Patching memory extensions to prevent context overflow..."
+
+python3 - << 'PYEOF'
+import sys, os, re
+base = os.path.expanduser('~/agent-zero/python/extensions/monologue_end')
+
+truncation_snippet = '''
+        # --- Pi context-window fix: truncate history to fit util model limit ---
+        util_ctx = (self.agent.config.util_model.ctx_length
+                    if hasattr(self.agent.config, 'util_model')
+                    and hasattr(self.agent.config.util_model, 'ctx_length')
+                    else 8192)
+        max_chars = max(1000, (util_ctx - 1500) * 3)  # ~3 chars/token, 1500-token headroom
+        if len(msgs_text) > max_chars:
+            msgs_text = msgs_text[-max_chars:]  # keep the most recent context
+        # --- end Pi fix ---'''
+
+files = {
+    '_50_memorize_fragments.py': 'memories_json = await self.agent.call_utility_model(',
+    '_51_memorize_solutions.py': 'solutions_json = await self.agent.call_utility_model(',
+}
+
+for filename, sentinel in files.items():
+    path = os.path.join(base, filename)
+    try:
+        with open(path, 'r') as f:
+            content = f.read()
+        # Only patch if truncation isn't already present
+        if 'Pi context-window fix' in content:
+            print(f'  ℹ️  {filename} already patched — skipping')
+            continue
+        # Insert truncation snippet right before the call_utility_model line
+        if sentinel not in content:
+            print(f'  ⚠️  {filename}: sentinel not found — skipping (file may have changed)')
+            continue
+        content = content.replace(sentinel, truncation_snippet + '\n        ' + sentinel, 1)
+        with open(path, 'w') as f:
+            f.write(content)
+        print(f'  ✅ {filename} patched with context truncation')
+    except FileNotFoundError:
+        print(f'  ⚠️  {filename} not found — skipping (AgentZero not installed yet?)')
+PYEOF
+
+# -----------------------------------------------
 # STEP 7: Install Docker (for agent sandbox)
 # -----------------------------------------------
 echo ""
@@ -336,7 +388,7 @@ cat > "$AGENT_DIR/usr/settings.json" << 'SETTINGS_EOF'
     "util_model_provider": "openai",
     "util_model_name": "YOUR_MODEL_NAME",
     "util_model_api_base": "http://YOUR_LLM_SERVER_IP:PORT/v1",
-    "util_model_ctx_length": 32000,
+    "util_model_ctx_length": 8192,
     "embed_model_provider": "huggingface",
     "embed_model_name": "sentence-transformers/all-MiniLM-L6-v2",
     "embed_model_api_base": "",
