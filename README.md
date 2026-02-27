@@ -21,7 +21,7 @@ No cloud APIs required. Fully private. Fully local.
 - [Configuration](#-configuration)
 - [Running AgentZero](#-running-agentzero)
 - [Auto-Start on Boot (systemd)](#-auto-start-on-boot-systemd)
-- [Remote Access via Tailscale](#-remote-access-via-tailscale)
+- [Memory Optimization (Important for Pi 4)](#-memory-optimization-important-for-pi-4)
 - [Telegram Integration (Optional)](#-telegram-integration-optional)
 - [Troubleshooting](#-troubleshooting)
 - [ARM64 Compatibility Notes](#-arm64-compatibility-notes)
@@ -351,7 +351,7 @@ Paste:
 ```ini
 [Unit]
 Description=AgentZero AI Agent
-After=network-online.target docker.service
+After=network-online.target
 Wants=network-online.target
 
 [Service]
@@ -362,6 +362,14 @@ ExecStart=/home/<YOUR_PI_USERNAME>/agent-zero/venv/bin/python run_ui.py --docker
 Restart=on-failure
 RestartSec=10
 Environment=PATH=/home/<YOUR_PI_USERNAME>/agent-zero/venv/bin:/usr/local/bin:/usr/bin:/bin
+
+# Memory guards — critical on Pi 4 to prevent OOM crashes taking down the whole OS
+# MemoryHigh: soft limit, kernel starts reclaiming memory at this point
+# MemoryMax: hard limit, systemd kills AgentZero cleanly instead of random OS processes
+MemoryHigh=2800M
+MemoryMax=3200M
+# OOMScoreAdjust: sacrifice AgentZero first if memory gets critical system-wide
+OOMScoreAdjust=500
 
 [Install]
 WantedBy=multi-user.target
@@ -380,46 +388,91 @@ sudo systemctl start agentzero
 ### 3. Useful commands
 
 ```bash
-sudo systemctl status agentzero      # Check status
-journalctl -u agentzero -f            # View live logs
-sudo systemctl restart agentzero      # Restart after config changes
-sudo systemctl stop agentzero         # Stop
+sudo systemctl status agentzero        # Check status
+sudo journalctl -u agentzero.service -f  # View live logs
+sudo systemctl restart agentzero       # Restart after config changes
+sudo systemctl stop agentzero          # Stop
 ```
 
 ---
 
-## 🌐 Remote Access via Tailscale
+## 💾 Memory Optimization (Important for Pi 4)
 
-To access AgentZero from your phone or from outside your home network, use [Tailscale](https://tailscale.com) — a zero-config VPN.
+The Pi 4's 4GB RAM is tight for AgentZero. Without tuning, the Python process can consume 2–2.5GB and trigger a kernel OOM kill, causing random crashes and restart loops. The setup script handles all of this automatically, but here's what it does and why:
 
-### Install Tailscale on the Pi
-
-```bash
-curl -fsSL https://tailscale.com/install.sh | sh
-sudo tailscale up
-```
-
-Follow the printed URL to authorize the Pi in your Tailscale account.
-
-### Get the Pi's Tailscale IP
+### 1. Add a real swap file (most important)
 
 ```bash
-tailscale ip -4
+sudo fallocate -l 4G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+
+# Tune swappiness: lower = use RAM longer before swapping
+echo 'vm.swappiness=10' | sudo tee -a /etc/sysctl.conf
+sudo sysctl vm.swappiness=10
 ```
 
-This returns a `100.x.y.z` address.
+> **Note:** The default `zram` swap on Pi OS is just compressed RAM — it doesn't add real memory headroom. A real swap file on the SD card does.
 
-### Access from Any Device
+### 2. Disable Kokoro TTS (~500–800MB saved)
 
-With Tailscale running on your phone/laptop, open:
+Kokoro loads a neural TTS model into RAM at startup even if you never use voice output. Disable it:
 
+```bash
+# Add to usr/.env (persists across AgentZero updates)
+echo 'A0_SET_tts_kokoro=false' >> ~/agent-zero/usr/.env
 ```
-http://100.x.y.z:5000
+
+Or in the AgentZero web UI: **Settings → TTS → disable Kokoro**.
+
+### 3. Use delayed embedding model loading (~400MB saved at startup)
+
+By default, AgentZero loads the `sentence-transformers` model at startup for memory recall. Delayed loading only loads it when memory recall is actually first needed:
+
+In `usr/settings.json`:
+```json
+{
+    "tts_kokoro": false,
+    "memory_recall_delayed": true
+}
 ```
 
-This works from anywhere — home, cellular, coffee shop — as long as both devices are connected to your Tailscale network.
+All memory/recall features remain fully enabled — the model just loads on-demand instead of at boot.
 
-> ⚠️ **Security:** Even though Tailscale is encrypted and private, always set `API_KEY_AUTH` in your `.env` to password-protect the web UI. Tailscale ACLs can further restrict which devices can reach the Pi.
+### 4. Disable unnecessary system services
+
+Services that waste RAM on a Pi dedicated to AgentZero:
+
+```bash
+sudo systemctl stop bluetooth ModemManager avahi-daemon
+sudo systemctl disable bluetooth ModemManager avahi-daemon
+```
+
+### RAM budget after optimization
+
+| Component | Before | After |
+|---|---|---|
+| Kokoro TTS | ~600MB | 0MB (disabled) |
+| Embedding model (startup) | ~450MB | 0MB (lazy-loaded) |
+| Bluetooth/Avahi/ModemManager | ~50MB | 0MB |
+| **AgentZero headroom** | ~1.1GB | **~2.5GB** |
+
+### Diagnosing OOM crashes
+
+If AgentZero randomly dies and keeps restarting:
+
+```bash
+# Check if the OOM killer struck
+dmesg | grep -i "oom\|killed process" | tail -10
+
+# Check how many times the service has restarted
+sudo journalctl -u agentzero.service | grep -c "Started"
+
+# Watch memory live
+watch -n 2 'free -h'
+```
 
 ---
 
@@ -473,6 +526,85 @@ You can bridge AgentZero to Telegram so you can chat with your agent from your p
 
 ## 🔧 Troubleshooting
 
+### AgentZero randomly crashes and keeps restarting (OOM Kill)
+
+**Cause:** The kernel's OOM killer terminated the Python process because it ran out of memory. This is the most common issue on 4GB Pi 4 units.
+
+**Diagnosis:**
+```bash
+# Confirm it was an OOM kill
+dmesg | grep -i "oom\|killed process" | tail -10
+
+# Watch memory live
+watch -n 2 'free -h'
+```
+
+**Fix:** Follow the [Memory Optimization](#-memory-optimization-important-for-pi-4) section. Key steps:
+1. Add a 4GB swap file
+2. Disable Kokoro TTS (`A0_SET_tts_kokoro=false` in `.env`)
+3. Enable delayed embedding model loading (`memory_recall_delayed: true` in settings)
+4. Add `MemoryMax=3200M` to the systemd service (the setup script does this automatically)
+
+---
+
+### `SyntaxError: positional argument follows keyword argument` (settings.py line ~775)
+
+**Cause:** A bug in Agent Zero's `settings.py` — the `set_root_password()` function has a positional argument (`["chpasswd"]`) placed after a keyword argument (`env=...`). This is a Python syntax error that **prevents Agent Zero from starting entirely**.
+
+**Fix:** Run this on the Pi:
+```bash
+python3 - << 'EOF'
+import sys, os
+path = os.path.expanduser('~/agent-zero/python/helpers/settings.py')
+with open(path, 'r') as f:
+    lines = f.readlines()
+for i, line in enumerate(lines):
+    if 'subprocess.run(env=' in line and '{"PATH"' in line:
+        lines[i] = '    _result = subprocess.run(\n'
+        lines[i+1] = '        ["chpasswd"],\n'
+        lines.insert(i+2, '        env={"PATH": __import__("os").environ.get("PATH", "") + ":/usr/sbin"},\n')
+        with open(path, 'w') as f:
+            f.writelines(lines)
+        print('Fixed!')
+        sys.exit(0)
+print('Pattern not found — may already be fixed')
+EOF
+
+# Verify no syntax errors remain
+python3 -c "import ast; ast.parse(open('~/agent-zero/python/helpers/settings.py').read()); print('OK')"
+```
+
+> **Note:** The setup script applies this fix automatically.
+
+---
+
+### `Failed to save settings: chpasswd returned non-zero exit status 1`
+
+**Cause:** When you click Save in the AgentZero settings UI with an empty `root_password` field, AgentZero tries to call `chpasswd` to set the Linux root password (a Docker-container feature). It fails because the password is empty and the process doesn't run as root.
+
+**Fix:** The `root_password` field is only relevant inside the official Docker container — not for native Pi installs. Patch the empty-password guard:
+```bash
+python3 - << 'EOF'
+import os
+path = os.path.expanduser('~/agent-zero/python/helpers/settings.py')
+with open(path, 'r') as f:
+    content = f.read()
+old = 'if settings["root_password"] != PASSWORD_PLACEHOLDER:'
+new = 'if settings["root_password"] and settings["root_password"] != PASSWORD_PLACEHOLDER:'
+if old in content and new not in content:
+    content = content.replace(old, new, 1)
+    with open(path, 'w') as f:
+        f.write(content)
+    print('Fixed!')
+else:
+    print('Already patched or pattern not found')
+EOF
+```
+
+> **Note:** The setup script applies this fix automatically. Just leave the root password field blank in the UI.
+
+---
+
 ### "Illegal instruction" on startup
 
 **Cause:** A compiled library uses CPU instructions the Pi 4's Cortex-A72 (ARMv8.0) doesn't support.
@@ -483,13 +615,19 @@ pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
 pip install faiss-cpu==1.8.0.post1
 ```
 
+---
+
 ### "No RFC password" error
 
 **Fix:** Add `RFC_PASSWORD=any_password_here` to `usr/.env`
 
+---
+
 ### Web UI not accessible from other devices
 
 **Fix:** Add `WEB_UI_HOST=0.0.0.0` to `usr/.env` and restart.
+
+---
 
 ### "404 Not Found" when sending messages
 
@@ -500,23 +638,27 @@ pip install faiss-cpu==1.8.0.post1
 - For Ollama: Use `"ollama"` provider **without** `/v1`
 - Verify your model name matches exactly: `curl http://<server>:<port>/v1/models`
 
+---
+
 ### Chrome/Firefox can't connect but Safari works
 
-**Cause:** On **macOS Sequoia** (15.0+), Apple introduced **Local Network Privacy**. Third-party apps (Chrome, Firefox, etc.) need explicit permission to access devices on your local network. Safari and Terminal are system apps that bypass this restriction.
+**Cause:** On **macOS Sequoia** (15.0+), Apple introduced **Local Network Privacy**. Third-party browsers need explicit permission.
 
-**Fix (Mac):** Go to **System Settings → Privacy & Security → Local Network** and toggle **ON** for Chrome, Firefox, and any other browser you want to use.
+**Fix (Mac):** Go to **System Settings → Privacy & Security → Local Network** and toggle **ON** for Chrome/Firefox.
 
-**Fix (iPhone):** Go to **Settings → Privacy & Security → Local Network** and ensure your browser is toggled on. If it doesn't appear in the list, try loading the page first — iOS will prompt you to allow local network access.
+**Fix (iPhone):** Go to **Settings → Privacy & Security → Local Network** and enable for your browser.
 
-> **Tip:** If you're still having trouble on mobile, use [Tailscale](#-remote-access-via-tailscale) and access AgentZero via its `100.x.y.z` Tailscale IP instead of the local IP.
+---
 
 ### "Memory consolidation timeout for area fragments"
 
-This is a non-critical warning. AgentZero's background memory consolidation system uses the `util_model` to clean up memories, and the default 60-second timeout can be exceeded by larger/slower models.
+This is a non-critical warning. AgentZero's background memory consolidation uses `util_model` and can timeout with larger/slower models.
 
-**Impact:** None — your chat and agent actions are unaffected. Memories are still saved; they just skip being "consolidated" with older ones.
+**Impact:** None — chat and agent actions are unaffected. Memories are still saved.
 
-**Fix (optional):** Use a smaller, faster model for `util_model` (e.g., a 3B-8B model on a separate llama-server port) while keeping your main `chat_model` large.
+**Fix (optional):** Use a smaller, faster model for `util_model` while keeping `chat_model` large.
+
+---
 
 ### PermissionError: `/a0` Permission denied
 
@@ -528,6 +670,8 @@ sudo mkdir -p /a0
 sudo chown $USER:$USER /a0
 sudo systemctl restart agentzero
 ```
+
+---
 
 ### `RequestsDependencyWarning: urllib3 ...`
 
